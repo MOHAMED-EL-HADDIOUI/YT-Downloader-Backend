@@ -7,8 +7,10 @@ from pathlib import Path
 app = Flask(__name__)
 CORS(app)
 
+# Dossier de téléchargement
 DOWNLOAD_FOLDER = Path("downloads")
-DOWNLOAD_FOLDER.mkdir(exist_ok=True)
+if not DOWNLOAD_FOLDER.exists():
+    DOWNLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
 
 @app.route('/api/download', methods=['POST'])
 def download():
@@ -41,7 +43,7 @@ def download():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
-            
+
             # Ajuster l'extension pour les fichiers audio
             if format_type == 'audio':
                 filename = str(Path(filename).with_suffix('.mp3'))
@@ -53,16 +55,22 @@ def download():
             download_name=os.path.basename(filename)
         )
 
+    except yt_dlp.DownloadError as e:
+        return jsonify({"message": f"Download error: {str(e)}"}), 500
+
     except Exception as e:
-        return jsonify({"message": str(e)}), 500
+        return jsonify({"message": f"An error occurred: {str(e)}"}), 500
 
     finally:
         # Nettoyage des fichiers téléchargés
         for file in DOWNLOAD_FOLDER.iterdir():
             try:
                 file.unlink()
-            except:
+            except Exception:
                 pass
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    # Port et mode de débogage à partir des variables d'environnement
+    port = int(os.environ.get("PORT", 5000)) 
+    debug_mode = os.environ.get("DEBUG", "False").lower() in ("true", "1")
+    app.run(host="0.0.0.0", port=port, debug=debug_mode)
