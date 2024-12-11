@@ -3,7 +3,6 @@ from flask_cors import CORS
 import yt_dlp
 import os
 from pathlib import Path
-import browser_cookie3  # Additional library for cookie extraction
 
 app = Flask(__name__)
 CORS(app)
@@ -21,27 +20,33 @@ def download():
         # Validation des paramètres reçus
         url = data.get('url')
         format_type = data.get('format')
+        
         if not url:
             return jsonify({"message": "URL is required"}), 400
         if not format_type:
             return jsonify({"message": "Format type is required"}), 400
         
-        # Configuration des cookies - essayez différents navigateurs
-        try:
-            # Essayez de récupérer les cookies de Chrome
-            cookies = browser_cookie3.chrome(domain_name='.youtube.com')
-        except Exception:
-            try:
-                # Si Chrome échoue, essayez Firefox
-                cookies = browser_cookie3.firefox(domain_name='.youtube.com')
-            except Exception:
-                # Si aucun cookie n'est trouvé, utilisez une configuration alternative
-                cookies = None
-        
-        # Configuration de yt-dlp selon le format
+        # Configuration avancée de yt-dlp pour contourner les restrictions
         ydl_opts = {
             'format': 'bestaudio/best' if format_type == 'audio' else 'best',
             'outtmpl': str(DOWNLOAD_FOLDER / '%(title)s.%(ext)s'),
+            # Paramètres pour éviter la détection de bot
+            'no_warnings': True,
+            'ignoreerrors': False,
+            'no_color': True,
+            'age_limit': 99,
+            # Configurer un user agent moins suspect
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Referer': 'https://www.youtube.com/',
+            },
+            # Configurer des options de sécurité supplémentaires
+            'retries': 3,
+            'fragment_retries': 3,
+            'retry_sleep': 5,
+            'wait_for_video': (0, 30)  # Attendre jusqu'à 30 secondes
         }
         
         # Configuration spécifique pour l'audio
@@ -51,14 +56,6 @@ def download():
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }]
-        
-        # Ajouter les cookies s'ils sont disponibles
-        if cookies:
-            ydl_opts['cookiefile'] = str(DOWNLOAD_FOLDER / 'cookies.txt')
-            # Écrire les cookies dans un fichier temporaire
-            with open(ydl_opts['cookiefile'], 'w') as f:
-                for cookie in cookies:
-                    f.write(f"{cookie.domain}\t{str(cookie.domain_specified).upper()}\t{cookie.path}\t{str(cookie.secure).upper()}\t{cookie.expires or 0}\t{cookie.name}\t{cookie.value}\n")
         
         # Téléchargement avec yt-dlp
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -83,7 +80,7 @@ def download():
         return jsonify({"message": f"An error occurred: {str(e)}"}), 500
     
     finally:
-        # Nettoyage des fichiers téléchargés et des cookies
+        # Nettoyage des fichiers téléchargés
         for file in DOWNLOAD_FOLDER.iterdir():
             try:
                 file.unlink()
