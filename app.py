@@ -3,6 +3,9 @@ from flask_cors import CORS
 import yt_dlp
 import os
 from pathlib import Path
+import requests
+import signal
+import functools
 
 app = Flask(__name__)
 CORS(app)
@@ -12,7 +15,27 @@ DOWNLOAD_FOLDER = Path("downloads")
 if not DOWNLOAD_FOLDER.exists():
     DOWNLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
 
+def timeout(seconds):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            def handler(signum, frame):
+                raise TimeoutError(f"Function call timed out after {seconds} seconds")
+
+            # Set the signal handler and a timeout
+            signal.signal(signal.SIGALRM, handler)
+            signal.alarm(seconds)
+            try:
+                result = func(*args, **kwargs)
+            finally:
+                # Cancel the alarm
+                signal.alarm(0)
+            return result
+        return wrapper
+    return decorator
+
 @app.route('/api/download', methods=['POST'])
+@timeout(60)  # 60 seconds timeout
 def download():
     try:
         # Récupération des données JSON envoyées dans le corps de la requête
@@ -30,23 +53,20 @@ def download():
         ydl_opts = {
             'format': 'bestaudio/best' if format_type == 'audio' else 'best',
             'outtmpl': str(DOWNLOAD_FOLDER / '%(title)s.%(ext)s'),
-            # Paramètres pour éviter la détection de bot
+            'nooverwrites': True,
             'no_warnings': True,
             'ignoreerrors': False,
             'no_color': True,
             'age_limit': 99,
-            # Configurer un user agent moins suspect
+            'socket_timeout': 30,  # Timeout for network operations
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                 'Accept-Language': 'en-US,en;q=0.9',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
                 'Referer': 'https://www.youtube.com/',
             },
-            # Configurer des options de sécurité supplémentaires
             'retries': 3,
             'fragment_retries': 3,
             'retry_sleep': 5,
-            'wait_for_video': (0, 30)  # Attendre jusqu'à 30 secondes
         }
         
         # Configuration spécifique pour l'audio
@@ -57,12 +77,18 @@ def download():
                 'preferredquality': '192',
             }]
         
-        # Téléchargement avec yt-dlp
+        # Attempt to download with yt-dlp
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
+            # First, extract video info to check availability
+            info_dict = ydl.extract_info(url, download=False)
             
-            # Ajuster l'extension pour les fichiers audio
+            # If video is available, proceed with download
+            ydl.download([url])
+            
+            # Prepare filename
+            filename = ydl.prepare_filename(info_dict)
+            
+            # Adjust extension for audio
             if format_type == 'audio':
                 filename = str(Path(filename).with_suffix('.mp3'))
         
@@ -72,6 +98,9 @@ def download():
             as_attachment=True,
             download_name=os.path.basename(filename)
         )
+    
+    except TimeoutError:
+        return jsonify({"message": "Download timed out. Please try again."}), 504
     
     except yt_dlp.DownloadError as e:
         return jsonify({"message": f"Download error: {str(e)}"}), 500
