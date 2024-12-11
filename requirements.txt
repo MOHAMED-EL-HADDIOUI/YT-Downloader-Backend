@@ -3,3 +3,4 @@ Flask-Cors==5.0.0
 yt-dlp==2024.12.6
 gunicorn==23.0.0
 browser-cookie3==0.19.1
+requests==2.32.3
