@@ -15,12 +15,17 @@ if not DOWNLOAD_FOLDER.exists():
 @app.route('/api/download', methods=['POST'])
 def download():
     try:
-        data = request.form
+        # Récupération des données JSON envoyées dans le corps de la requête
+        data = request.get_json()
+
+        # Validation des paramètres reçus
         url = data.get('url')
         format_type = data.get('format')
 
         if not url:
             return jsonify({"message": "URL is required"}), 400
+        if not format_type:
+            return jsonify({"message": "Format type is required"}), 400
 
         # Configuration de yt-dlp selon le format
         if format_type == 'audio':
@@ -33,7 +38,7 @@ def download():
                 }],
                 'outtmpl': str(DOWNLOAD_FOLDER / '%(title)s.%(ext)s'),
             }
-        else:  # video
+        else:  # Vidéo par défaut
             ydl_opts = {
                 'format': 'best',
                 'outtmpl': str(DOWNLOAD_FOLDER / '%(title)s.%(ext)s'),
@@ -48,7 +53,7 @@ def download():
             if format_type == 'audio':
                 filename = str(Path(filename).with_suffix('.mp3'))
 
-        # Envoi du fichier
+        # Envoi du fichier téléchargé
         return send_file(
             filename,
             as_attachment=True,
@@ -62,7 +67,7 @@ def download():
         return jsonify({"message": f"An error occurred: {str(e)}"}), 500
 
     finally:
-        # Nettoyage des fichiers téléchargés
+        # Nettoyage des fichiers téléchargés après l'envoi
         for file in DOWNLOAD_FOLDER.iterdir():
             try:
                 file.unlink()
