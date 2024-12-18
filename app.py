@@ -1,123 +1,137 @@
+import os
+import logging
+from pathlib import Path
+import uuid
+
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 import yt_dlp
-import os
-from pathlib import Path
-import requests
-import signal
-import functools
 
+# Configuration de l'application
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-# Dossier de téléchargement
-DOWNLOAD_FOLDER = Path("downloads")
-if not DOWNLOAD_FOLDER.exists():
-    DOWNLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+# Configuration du logging
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s: %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-def timeout(seconds):
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            def handler(signum, frame):
-                raise TimeoutError(f"Function call timed out after {seconds} seconds")
+# Dossiers de travail
+BASE_DIR = Path(__file__).resolve().parent
+DOWNLOAD_FOLDER = BASE_DIR / 'downloads'
+DOWNLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
 
-            # Set the signal handler and a timeout
-            signal.signal(signal.SIGALRM, handler)
-            signal.alarm(seconds)
-            try:
-                result = func(*args, **kwargs)
-            finally:
-                # Cancel the alarm
-                signal.alarm(0)
-            return result
-        return wrapper
-    return decorator
+def clean_filename(filename):
+    """Nettoie le nom de fichier pour éviter les caractères problématiques"""
+    return "".join(c for c in filename if c.isalnum() or c in (' ', '.', '_', '-')).rstrip()
 
 @app.route('/api/download', methods=['POST'])
-@timeout(60)  # 60 seconds timeout
-def download():
+def download_youtube():
     try:
-        # Récupération des données JSON envoyées dans le corps de la requête
+        # Récupération des données
         data = request.get_json()
-        # Validation des paramètres reçus
-        url = data.get('url')
-        format_type = data.get('format')
-        
+        logger.info(f"Données reçues : {data}")
+
+        url = data.get('url', '').strip()
+        format_type = data.get('format', 'audio')
+
+        # Validation de l'URL
         if not url:
-            return jsonify({"message": "URL is required"}), 400
-        if not format_type:
-            return jsonify({"message": "Format type is required"}), 400
-        
-        # Configuration avancée de yt-dlp pour contourner les restrictions
+            return jsonify({"message": "URL est requise"}), 400
+
+        # Configuration de yt-dlp
+        unique_id = str(uuid.uuid4())[:8]
+        output_template = str(DOWNLOAD_FOLDER / f"{unique_id}_%(title)s.%(ext)s")
+
+        # Configuration des options yt-dlp
         ydl_opts = {
-            'format': 'bestaudio/best' if format_type == 'audio' else 'best',
-            'outtmpl': str(DOWNLOAD_FOLDER / '%(title)s.%(ext)s'),
             'nooverwrites': True,
             'no_warnings': True,
             'ignoreerrors': False,
             'no_color': True,
             'age_limit': 99,
-            'socket_timeout': 30,  # Timeout for network operations
+            'outtmpl': output_template,
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://www.youtube.com/',
             },
-            'retries': 3,
-            'fragment_retries': 3,
-            'retry_sleep': 5,
         }
-        
-        # Configuration spécifique pour l'audio
+
+        # Configuration spécifique selon le format
         if format_type == 'audio':
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-        
-        # Attempt to download with yt-dlp
+            ydl_opts.update({
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }]
+            })
+        else:  # video
+            ydl_opts.update({
+                # Sélectionner le meilleur format vidéo disponible
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'merge_output_format': 'mp4',
+            })
+
+        # Téléchargement
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # First, extract video info to check availability
+            logger.info(f"Tentative de téléchargement : {url}")
+            
+            # Vérifier les informations du format
             info_dict = ydl.extract_info(url, download=False)
             
-            # If video is available, proceed with download
+            # Télécharger
             ydl.download([url])
             
-            # Prepare filename
-            filename = ydl.prepare_filename(info_dict)
-            
-            # Adjust extension for audio
+            # Récupération du nom de fichier
+            if 'entries' in info_dict:
+                # Playlist ou plusieurs vidéos
+                filename = ydl.prepare_filename(info_dict['entries'][0])
+            else:
+                filename = ydl.prepare_filename(info_dict)
+
+            # Ajustement de l'extension
             if format_type == 'audio':
                 filename = str(Path(filename).with_suffix('.mp3'))
-        
-        # Envoi du fichier téléchargé
+            else:
+                filename = str(Path(filename).with_suffix('.mp4'))
+
+        # Nettoyer le nom de fichier
+        safe_filename = clean_filename(os.path.basename(filename))
+        full_path = str(Path(filename))
+
+        logger.info(f"Téléchargement réussi : {safe_filename}")
+
+        # Envoi du fichier
         return send_file(
-            filename,
-            as_attachment=True,
-            download_name=os.path.basename(filename)
+            full_path, 
+            as_attachment=True, 
+            download_name=safe_filename
         )
-    
-    except TimeoutError:
-        return jsonify({"message": "Download timed out. Please try again."}), 504
-    
-    except yt_dlp.DownloadError as e:
-        return jsonify({"message": f"Download error: {str(e)}"}), 500
-    
+
+    except yt_dlp.utils.DownloadError as e:
+        logger.error(f"Erreur de téléchargement : {e}", exc_info=True)
+        return jsonify({"message": f"Impossible de télécharger : {str(e)}"}), 400
+
     except Exception as e:
-        return jsonify({"message": f"An error occurred: {str(e)}"}), 500
-    
-    finally:
-        # Nettoyage des fichiers téléchargés
-        for file in DOWNLOAD_FOLDER.iterdir():
-            try:
-                file.unlink()
-            except Exception:
-                pass
+        logger.error(f"Erreur complète : {e}", exc_info=True)
+        return jsonify({"message": f"Erreur serveur : {str(e)}"}), 500
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Point de contrôle de santé de l'application"""
+    return jsonify({
+        "status": "healthy", 
+        "version": "1.0.0"
+    }), 200
 
 if __name__ == '__main__':
-    # Port et mode de débogage à partir des variables d'environnement
-    port = int(os.environ.get("PORT", 5000)) 
+    # Configuration du serveur
+    port = int(os.environ.get("PORT", 5000))
     debug_mode = os.environ.get("DEBUG", "False").lower() in ("true", "1")
+    
+    logger.info(f"Démarrage du serveur sur le port {port}")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
